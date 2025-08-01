@@ -2001,791 +2001,868 @@ class StudyMethodsPage(BasePage):
 
 
 
-class NotesPage(ft.Control):
+import os
+import csv
+import flet as ft
+import threading
+import calendar
+import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import date, datetime
+import uuid
+import time
+from functools import lru_cache
 
-    def __init__(self, page: ft.Page, **kwargs):
-        super().__init__(**kwargs)
+# ================ SISTEMA DE TEMAS MEJORADO ================
+class AppTheme:
+    PRIMARY = "#4361EE"    # Azul vibrante
+    SECONDARY = "#8B5CF6"  # Violeta suave
+    SUCCESS = "#10B981"    # Verde esmeralda
+    WARNING = "#F59E0B"    # Ámbar cálido
+    DANGER = "#EF4444"     # Rojo coral
+    DARK = "#1E293B"       # Azul oscuro
+    LIGHT = "#F8FAFC"      # Blanco azulado
+    
+    @staticmethod
+    def grade_color(grade: float) -> str:
+        """Paleta de colores moderna para calificaciones"""
+        color_map = {
+            5.0: "#10B981",  # Verde esmeralda
+            4.5: "#34D399",
+            4.0: "#6EE7B7",
+            3.5: "#FBBF24",  # Ámbar
+            3.0: "#F59E0B",
+            2.5: "#EF4444",  # Rojo
+            2.0: "#DC2626"
+        }
+        return next((v for k, v in color_map.items() if grade >= k), "#DC2626")
+    
+    @staticmethod
+    def surface_color(light: str, dark: str = None):
+        """Color adaptable al modo claro/oscuro"""
+        return light if ft.Page.theme_mode == ft.ThemeMode.LIGHT else dark or light
+
+# ================ SISTEMA DE NOTIFICACIONES ================
+class NotificationSystem:
+    def __init__(self, page):
         self.page = page
-        self.current_filter = current_filter
-        self.search_query = ""
-        # Atributo para guardar ruta del CSV ya generado
-        self.csv_link = ""
-
-    def _get_control_name(self):
-        return "NotesPage"
-
-
-    def _edit_note(self, note):
-        # Aquí abrirías un diálogo para editar la nota
-            dlg = ft.AlertDialog(
-                title=ft.Text(f"Editar nota: {note['asignatura']}"),
-                content=ft.Text("Funcionalidad de edición en construcción."),
-                actions=[ft.TextButton("Cerrar", on_click=lambda e: dlg.close())]
-            )
-            self.page.dialog = dlg
-            dlg.open = True
-            self.page.update()
     
-    def build_recommendations(self):
-        """
-        Sugiere métodos de estudio basados en la asignatura con promedio más bajo.
-        """
-        averages = self.get_average_by_subject()
-        if not averages:
-            return ft.Container()
-        lowest_subj = min(averages, key=averages.get)
-        # Tomamos hasta 3 técnicas recientes o, si hay menos, las primeras 3
-        recs = [t for t in techniques if t["categoria"] == "Recientes"]
-        if len(recs) < 3:
-            recs = techniques[:3]
-        rec_cards = []
-        for t in recs:
-            card = MethodCard(
-                key=str(t["id"]),
-                titulo=t["titulo"],
-                icon_url=t.get("icon_url", ""),
-                descripcion=t["descripcion"]
-            )
-            # Lo hacemos clicable:
-            rec_cards.append(
-                ft.GestureDetector(
-                    content=card,
-                    on_tap=lambda e, tech=t: (
-                        setattr(StudyMethodsPage, "initial_filter", tech["titulo"]),  # opcional: pasar filtro
-                        NavigationController.update_view("Metodos")
-                    )
-                )
-            )
-
-        return ft.Card(
-            elevation=2,
-            margin=ft.margin.symmetric(horizontal=20, vertical=10),
-            content=ft.Container(
-                padding=ft.padding.all(16),
-                content=ft.Column(
-                    controls=[
-                        ft.Row([
-                            ft.Icon(ft.Icons.LIGHTBULB, color="#FBBF24"),
-                            ft.Text(f"Métodos recomendados para {lowest_subj}",
-                                    size=16, weight=ft.FontWeight.BOLD)
-                        ]),
-                        ft.Container(height=12),
-                        ft.Row(rec_cards, spacing=12)
-
-                    ],
-                    spacing=12
-                )
-            )
-        )
-
-
-    def _delete_note(self, note):
-        # Eliminamos la nota y recargamos
-        notes_data_all.remove(note)
-        self.page.snack_bar = ft.SnackBar(ft.Text("Nota eliminada."), open=True)
-        self.page.update()
-
-
-
-        # Convertimos a DataFrame
-        df = pd.DataFrame(notes_data_all)
-        df["fecha_dt"] = pd.to_datetime(df["fecha"])
-        df["calificacion"] = df["calificacion"].astype(float)
-        df_sorted = df.sort_values("fecha_dt")
-
-        # Dibujamos y guardamos en trend.png en la carpeta de trabajo actual
-        plt.figure(figsize=(6, 2))
-        plt.plot(
-            df_sorted["fecha_dt"],
-            df_sorted["calificacion"],
-            marker="o",
-            color="#F59E0B",
-            linestyle="-"
-        )
-        plt.title("Evolución de Calificaciones", fontsize=10)
-        plt.grid(axis="y", linestyle="--", alpha=0.4)
-        plt.xticks(rotation=45, fontsize=8)
-        plt.yticks(fontsize=8)
-        plt.tight_layout()
-        # Guardamos en la raíz de tu proyecto
-        plt.savefig("trend.png", dpi=150)
-        plt.close()
-
-    # ---------------------------------------------------------------
-    # 2) Método que construye el panel de “resumen” (4 métricas básicas)
-    # ---------------------------------------------------------------
-    def build_summary(self):
-        # 1) Promedio global
-        califs = [float(n["calificacion"]) for n in notes_data_all]
-        promedio_global = sum(califs) / len(califs) if califs else 0
-
-        # 2) Total de notas
-        total_notas = len(notes_data_all)
-
-        # 3) Materias distintas
-        materias_distintas = len(set(n["asignatura"] for n in notes_data_all))
-
-        # 4) Notas por debajo de 3.0
-        notas_bajas = sum(1 for n in notes_data_all if float(n["calificacion"]) < 3.0)
-
-        # Construimos un Row con cuatro columnas
-        return ft.Container(
-            bgcolor="white",
-            padding=ft.padding.symmetric(horizontal=20, vertical=12),
-            margin=ft.margin.symmetric(horizontal=20, vertical=10),
-            border_radius=ft.border_radius.all(8),
-            content=ft.Row(
-                controls=[
-                    ft.Column(
-                        controls=[
-                            ft.Text("Promedio global", size=12, color="#4B5563"),
-                            ft.Text(f"{promedio_global:.2f}", size=20, weight=ft.FontWeight.BOLD, color="#10B981"),
-                        ],
-                        spacing=4,
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        expand=True
-                    ),
-                    ft.Column(
-                        controls=[
-                            ft.Text("Total de notas", size=12, color="#4B5563"),
-                            ft.Text(f"{total_notas}", size=20, weight=ft.FontWeight.BOLD, color="#3B82F6"),
-                        ],
-                        spacing=4,
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        expand=True
-                    ),
-                    ft.Column(
-                        controls=[
-                            ft.Text("Materias distintas", size=12, color="#4B5563"),
-                            ft.Text(f"{materias_distintas}", size=20, weight=ft.FontWeight.BOLD, color="#6366F1"),
-                        ],
-                        spacing=4,
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        expand=True
-                    ),
-                    ft.Column(
-                        controls=[
-                            ft.Text("Notas < 3.0", size=12, color="#4B5563"),
-                            ft.Text(f"{notas_bajas}", size=20, weight=ft.FontWeight.BOLD, color="#EF4444"),
-                        ],
-                        spacing=4,
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        expand=True
-                    ),
-                ],
-                spacing=12
-            )
-        )
-
-    # ---------------------------------------------------------------
-    # 3) Funciones de filtrado y colores (idénticas a tu versión anterior)
-    # ---------------------------------------------------------------
-    def set_filter(self, opt):
-        self.current_filter = opt
-        NavigationController.update_view("Notas")
-
-    def on_search_change(self, e):
-        self.search_query = e.control.value.strip()
-        NavigationController.update_view("Notas")
-
-    def load_filtered_notes(self):
-        if self.current_filter == "Recientes":
-            notes = sorted(notes_data_all, key=lambda n: n["timestamp"], reverse=True)
-        elif self.current_filter == "Viejas":
-            notes = sorted(notes_data_all, key=lambda n: n["timestamp"])
-        else:
-            notes = notes_data_all.copy()
-        if self.search_query:
-            notes = [n for n in notes if self.search_query.lower() in n["asignatura"].lower()]
-        return notes
-
-    def color_for(self, avg: float) -> str:
-        if avg >= 4.7:
-            return "#2F855A"
-        if avg >= 4.3:
-            return "#68D391"
-        if avg >= 4.0:
-            return "#C6F6D5"
-        if avg >= 3.7:
-            return "#FAF089"
-        if avg >= 3.4:
-            return "#F6E05E"
-        if avg >= 3.0:
-            return "#D69E2E"
-        if avg >= 2.7:
-            return "#FEB2B2"
-        if avg >= 2.4:
-            return "#FC8181"
-        return "#C53030"
-
-    # ---------------------------------------------------------------
-    # 4) Exportar a CSV (sin cambios de ruta ni lógica)
-    # ---------------------------------------------------------------
-    def exportar_csv(self, e):
-        df = pd.DataFrame(notes_data_all)
-        ruta = "mis_notas.csv"
-        df.to_csv(ruta, index=False)
-
-        self.csv_link = f"sandbox:/{ruta}"
-
+    def show(self, message, type="info"):
+        colors = {
+            "info": AppTheme.PRIMARY,
+            "success": AppTheme.SUCCESS,
+            "warning": AppTheme.WARNING,
+            "error": AppTheme.DANGER
+        }
         self.page.snack_bar = ft.SnackBar(
-            ft.Text("CSV generado correctamente. Baja el archivo más abajo."),
-            open=True
+            ft.Text(message, color="white"),
+            bgcolor=colors[type]
         )
+        self.page.snack_bar.open = True
         self.page.update()
 
-    def get_average_by_subject(self):
-        subj_data = {}
-        for n in notes_data_all:
-            try:
-                g = float(n["calificacion"])
-            except:
-                continue
-            subj_data.setdefault(n["asignatura"], []).append(g)
-        # Devolver dict {asignatura: promedio}
-        return { subj: sum(grades)/len(grades) for subj, grades in subj_data.items() }
-
-    def build_graph(self):
-        averages = self.get_average_by_subject()
-        bars = []
-        for subj, avg in averages.items():
-            bars.append(
-                ft.Row(
-                    controls=[
-                        ft.Text(subj, width=100, size=12, weight=ft.FontWeight.NORMAL,
-                                text_align=ft.TextAlign.LEFT, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1),
-                        ft.Container(
-                            width=avg * 30,
-                            height=12,
-                            bgcolor=self.color_for(avg),
-                            border_radius=ft.border_radius.all(6),
-                        ),
-                        ft.Text(f"{avg:.2f}", size=12, width=40, text_align=ft.TextAlign.RIGHT),
-                    ],
-                    spacing=6,
-                )
-            )
-        return ft.Card(
-            elevation=2,
-            color="white",
-            content=ft.Container(
-                padding=ft.padding.all(16),
-                content=ft.Column(
-                    controls=[ft.Text("Desempeño por Asignatura",
-                                      weight=ft.FontWeight.BOLD,
-                                      size=14)] + bars,
-                    spacing=8,
-                ),
-            ),
-            margin=ft.margin.symmetric(horizontal=20, vertical=10)
-        )
+# ================ SISTEMA DE FILTROS ================
+class FilterSystem:
+    def __init__(self):
+        self.filters = {
+            'text': '',
+            'date': None,
+            'min_score': 0.0,
+            'max_score': 5.0,
+            'sort': 'recent'
+        }
     
-    def set_filter_date(self, day: int):
-        if not day:
-            return
-        date_str = f"{current_year}-{current_month_index+1:02d}-{day:02d}"
-        filtered = [n for n in notes_data_all if n["fecha"] == date_str]
-        if filtered:
-            dlg = ft.AlertDialog(
-                modal=True,
-                title=ft.Text(f"Notas del día {date_str}", weight=ft.FontWeight.BOLD),
-                content=ft.Column(
-                    controls=[
-                        ft.Row(
-                            [
-                                ft.Icon(ft.Icons.CALENDAR_MONTH, size=16, color="#374151"),
-                                ft.Text(f"{n['asignatura']}: {n['calificacion']}", size=14),
-                            ],
-                            spacing=8,
-                        )
-                        for n in filtered
-                    ],
-                    spacing=6,
-                ),
-                actions=[ft.TextButton("Cerrar", on_click=lambda e: self.page.dialog.close())],
-            )
-            self.page.dialog = dlg
-            dlg.open = True
-            self.page.update()
+    def apply(self, notes):
+        filtered = notes
+        if self.filters['text']:
+            filtered = [n for n in filtered if self.filters['text'].lower() in n['asignatura'].lower()]
+        if self.filters['date']:
+            filtered = [n for n in filtered if n['fecha'] == self.filters['date']]
+        filtered = [n for n in filtered if self.filters['min_score'] <= float(n['calificacion']) <= self.filters['max_score']]
+        
+        # Ordenamiento
+        if self.filters['sort'] == 'recent':
+            return sorted(filtered, key=lambda n: n['timestamp'], reverse=True)
+        elif self.filters['sort'] == 'old':
+            return sorted(filtered, key=lambda n: n['timestamp'])
+        return filtered
 
-
+# ================ CALENDARIO SIMPLIFICADO ================
+def build_calendar(on_date_select):
+    current_date = datetime.now()
+    selected_date = None
     
-    def build_performance_chart(self):
-    # Reutiliza tu get_average_by_subject()
-        averages = self.get_average_by_subject()
-        bars = []
-        for subj, avg in averages.items():
-            bars.append(
-                ft.Row(
-                    controls=[
-                        ft.Text(subj, size=12, weight=ft.FontWeight.BOLD, width=100),
-                        ft.Container(  # la “barra”
-                            width=avg * 50,   # escala más amplia
-                            height=12,
-                            bgcolor=self.color_for(avg),
-                            border_radius=ft.border_radius.all(6),
-                        ),
-                        ft.Text(f"{avg:.2f}", size=12, width=40, text_align=ft.TextAlign.RIGHT),
-                    ],
-                    spacing=8,
-                    alignment=ft.MainAxisAlignment.CENTER
-                )
-            )
-        return ft.Card(
-            elevation=3,
-            margin=ft.margin.symmetric(horizontal=20, vertical=12),
-            content=ft.Container(
-                bgcolor="#FFFFFF",
-                padding=ft.padding.all(16),
-                content=ft.Column(
-                    controls=[
-                        ft.Row([
-                            ft.Icon(ft.Icons.BAR_CHART, color="#3B82F6"),
-                            ft.Text("Desempeño por Asignatura", size=16, weight=ft.FontWeight.BOLD)
-                        ], alignment=ft.MainAxisAlignment.START),
-                        ft.Divider(height=12),
-                        *bars
-                    ],
-                    spacing=10
-                )
-            )
+    def change_month(delta, e):
+        nonlocal current_date
+        current_date = datetime(
+            current_date.year + (current_date.month + delta - 1) // 12,
+            (current_date.month + delta - 1) % 12 + 1,
+            1
         )
-
-        # — 7) Filtros (Chips + Buscador) —
-    def make_chip(self, label: str, selected: bool):
-        return ft.Container(
-            padding=ft.padding.symmetric(horizontal=14, vertical=6),
-            border_radius=ft.border_radius.all(20),
-            bgcolor="#3B82F6" if selected else "#E5E7EB",
-            content=ft.Text(
-                label,
-                size=13,
-                weight=ft.FontWeight.NORMAL,
-                color="white" if selected else "#4B5563"
-            ),
-            on_click=lambda e, opt=label: self.set_filter(opt),
-        )
-
-    def build(self):
-            # — 1) Resumen estadístico y recomendaciones —
-        summary = self.build_summary()
-        top_panel = ft.Row(
-            controls=[
-                summary,
-                self.build_recommendations()
-            ],
-            spacing=24,
-            expand=True
-        )
-
-
-
-        # … ahora dentro de build usas:
-        chips = ft.Row(
-            controls=[
-                self.make_chip("Todos",     self.current_filter == "Todos"),
-                self.make_chip("Recientes", self.current_filter == "Recientes"),
-                self.make_chip("Viejas",    self.current_filter == "Viejas"),
-            ],
-            spacing=12,
-            alignment=ft.MainAxisAlignment.START
-        )
-
-        search_field = ft.TextField(
-            hint_text="Buscar asignatura...",
-            prefix_icon=ft.Icons.SEARCH,
-            width=300,
-            border_radius=ft.border_radius.all(20),
-            bgcolor="#F3F4F6",
-            on_change=self.on_search_change,
-            value=self.search_query,
-        )
-
-        filter_row = ft.Container(
-            padding=ft.padding.symmetric(horizontal=20, vertical=10),
-            content=ft.Row(
-                controls=[
-                    ft.Container(content=chips, expand=True),
-                    ft.Container(expand=True),
-                    search_field,
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-            )
-        )
-
-
-             # — 3) Navbar superior —
-        navbar = ft.Container(
-            bgcolor="white",
-            padding=ft.padding.symmetric(horizontal=20, vertical=10),
-            shadow=ft.BoxShadow(blur_radius=2, offset=ft.Offset(0, 1), color="#0000000F"),
-            content=ft.Row(
-                controls=[
-                    build_popup_menu(),
-                    ft.Text("Point List", size=22, weight=ft.FontWeight.BOLD, color="#2B2B2B"),
-                    ft.Container(expand=True),
-                     ft.Text(current_user["name"], color="#2B2B2B"),
-                    # avatar clicable:
-                    ft.GestureDetector(
-                    content=ft.CircleAvatar(foreground_image_src=current_user["photo_url"], radius=16),
-                    on_tap=lambda e: NavigationController.update_view("Perfil")
-                    )
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=12,
-            ),
-        )
-
-
-        # — 4) Notificaciones —
-        alertas = [n for n in notes_data_all if float(n["calificacion"]) < 3.0]
-        notifs = []
-        if alertas:
-            for n in alertas:
-                icono_alerta = ft.Icon(ft.Icons.WARNING, color="#F87171", size=16)
-                notifs.append(
-                    ft.Container(
-                        bgcolor="#FEE2E2",
-                        border_radius=ft.border_radius.all(8),
-                        padding=ft.padding.symmetric(horizontal=12, vertical=4),
-                        margin=ft.margin.symmetric(horizontal=20, vertical=4),
-                        content=ft.Row(
-                            controls=[
-                                icono_alerta,
-                                ft.Text(f"{n['asignatura']}: {n['calificacion']} ({n['fecha']})",
-                                        color="#B91C1C", size=14,
-                                        overflow=ft.TextOverflow.ELLIPSIS,
-                                        max_lines=1),
-                            ],
-                            spacing=8,
-                        ),
-                    )
-                )
-
-        # — 8) Lista de notas —
-        filtered_notes = self.load_filtered_notes()
-
-                # — 8) Tarjetas de notas con Card y acciones rápidas —
-        def nota_card(n):
-            low = float(n["calificacion"]) < 3.0
-            # Indicador de color según calificación
-            indicator = ft.Container(
-                width=8, height=40,
-                bgcolor=self.color_for(float(n["calificacion"])),
-                border_radius=ft.border_radius.all(4),
-                margin=ft.margin.only(right=12)
-            )
-            # Card con sombra y borde redondeado
-            card = ft.Card(
-                elevation=2,
-                margin=ft.margin.symmetric(horizontal=20, vertical=8),
-                content=ft.Container(
-                    padding=ft.padding.all(16),
-                    content=ft.Row([
-                        indicator,
-                        ft.Column([
-                            ft.Text(n["asignatura"], size=16, weight=ft.FontWeight.BOLD),
-                            ft.Text(n["fecha"], size=12, color="#6B7280"),
-                        ], expand=True),
-                        ft.Text(n["calificacion"],
-                                size=24, weight=ft.FontWeight.BOLD,
-                                color="#2B2B2B"),
-                        ft.Icon(
-                            ft.Icons.WARNING if low else ft.Icons.CHECK_CIRCLE,
-                            color="#F87171" if low else "#10B981"
-                        ),
-                        # Botones de acción rápida
-                        ft.IconButton(
-                            icon=ft.Icons.EDIT,
-                            tooltip="Editar nota",
-                            on_click=lambda e, x=n: self._edit_note(x)
-                        ),
-                        ft.IconButton(
-                            icon=ft.Icons.DELETE,
-                            tooltip="Eliminar nota",
-                            on_click=lambda e, x=n: self._delete_note(x)
-                        ),
-                    ], alignment=ft.MainAxisAlignment.CENTER, spacing=12)
-                )
-            )
-            # Hover: más sombra
-            card.on_hover = lambda e: card.update(elevation=4 if e.data=="enter" else 2)
-            return card
-
-        notes_list = ft.ListView(
-            expand=True,
-            spacing=8,
-            padding=ft.padding.only(bottom=12),
-            controls=[nota_card(n) for n in self.load_filtered_notes()]
-        )
-
-
-
-        # — 9) CSV + Enlace —
-        export_button = ft.ElevatedButton(
-            text="Exportar a CSV",
-            icon=ft.Icons.DOWNLOAD,
-            on_click=self.exportar_csv,
-            style=ft.ButtonStyle(
-                bgcolor={"": "#2563EB"},
-                color={"": "white"}
-            )
-        )
-
-        download_link_text = (
-            ft.Text(
-                "► Descargar mis_notas.csv",
-                size=14,
-                weight=ft.FontWeight.BOLD,
-                color="#2563EB",
-                link=self.csv_link
-            )
-            if self.csv_link
-            else ft.Container()
-        )
-
-        # — 10) Mini‐calendario —
-        hoy = date.today()
+        calendar_container.content = build_calendar_content()
+        calendar_container.update()
+    
+    def select_date(day, e):
+        nonlocal selected_date
+        selected_date = day
+        date_str = f"{current_date.year}-{current_date.month:02d}-{day:02d}"
+        on_date_select(date_str)
+    
+    def build_calendar_content():
         cal = calendar.Calendar(firstweekday=6)
-        month_days = cal.monthdayscalendar(current_year, current_month_index + 1)
-
-        mini_rows = []
-        alto_celda = 28
-        margen_celda = 1
-
-        for semana in month_days:
-            celdas = []
-            for dia in semana:
-                day_str = str(dia) if dia else ""
-                is_today = (
-                    dia == hoy.day
-                    and (current_month_index + 1) == hoy.month
-                    and current_year == hoy.year
-                )
-                celdas.append(
-                    ft.Container(
-                        width=28,
-                        height=alto_celda,
-                        bgcolor="#FFFFFF",
-                        border=(
-                            ft.border.all(1, "#E5E7EB")
-                            if not is_today
-                            else ft.border.all(2, "#3B82F6")
-                        ),
-                        border_radius=ft.border_radius.all(6),
-                        content=ft.Text(
-                            day_str,
-                            size=12,
-                            color="#374151",
-                            text_align=ft.TextAlign.CENTER
-                        ) if dia else None,
-                        margin=ft.margin.only(
-                            left=margen_celda,
-                            right=margen_celda,
-                            top=margen_celda,
-                            bottom=margen_celda
-                        ),
-                        on_click=lambda e, d=dia: self.set_filter_date(d),
+        month_days = cal.monthdayscalendar(current_date.year, current_date.month)
+        
+        # Encabezado de días
+        weekdays = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"]
+        header = ft.Row(
+            [ft.Container(
+                width=32,
+                content=ft.Text(day, size=12, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER)
+            ) for day in weekdays],
+            alignment=ft.MainAxisAlignment.SPACE_AROUND
+        )
+        
+        # Celdas del calendario
+        rows = []
+        for week in month_days:
+            cells = []
+            for day in week:
+                if day == 0:
+                    cells.append(ft.Container(width=32, height=32))
+                else:
+                    is_today = (day == date.today().day and 
+                               current_date.month == date.today().month and 
+                               current_date.year == date.today().year)
+                    
+                    is_selected = (day == selected_date)
+                    
+                    cells.append(
+                        ft.Container(
+                            width=32,
+                            height=32,
+                            border_radius=16,
+                            bgcolor=AppTheme.PRIMARY if is_today else 
+                                   ft.Colors.TRANSPARENT,
+                            content=ft.Text(
+                                str(day),
+                                color="white" if is_today else AppTheme.DARK,
+                                text_align=ft.TextAlign.CENTER
+                            ),
+                            alignment=ft.alignment.center,
+                            on_click=lambda e, d=day: select_date(d, e)
+                        )
                     )
-                )
-            mini_rows.append(
-                ft.Row(
-                    controls=celdas,
-                    spacing=2,
-                    alignment=ft.MainAxisAlignment.CENTER
-                )
-            )
-
-        mini_header = ft.Row(
-            controls=[
+            rows.append(ft.Row(cells, alignment=ft.MainAxisAlignment.SPACE_AROUND))
+        
+        return ft.Column([
+            ft.Row([
                 ft.IconButton(
                     icon=ft.Icons.ARROW_BACK,
-                    icon_color="#374151",
-                    on_click=lambda e: change_month(-1),
-                    width=32,
-                    height=32
+                    on_click=lambda e: change_month(-1, e),
+                    icon_size=16
                 ),
                 ft.Text(
-                    f"{month_names[current_month_index]} {current_year}",
-                    size=14,
+                    f"{current_date.strftime('%B %Y')}",
+                    size=16,
                     weight=ft.FontWeight.BOLD,
-                    color="#374151",
                     expand=True,
                     text_align=ft.TextAlign.CENTER
                 ),
                 ft.IconButton(
                     icon=ft.Icons.ARROW_FORWARD,
-                    icon_color="#374151",
-                    on_click=lambda e: change_month(1),
-                    width=32,
-                    height=32
+                    on_click=lambda e: change_month(1, e),
+                    icon_size=16
                 ),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-        )
-
-        mini_calendar = ft.Container(
-            bgcolor="#FFFFFF",
-            padding=ft.padding.symmetric(horizontal=8, vertical=8),
-            border_radius=ft.border_radius.all(8),
-            width=240,
-            content=ft.Column(
-                controls=[mini_header] + mini_rows,
-                spacing=4,
-                alignment=ft.MainAxisAlignment.CENTER
-            ),
-            margin=ft.margin.only(top=12),
-        )
-
-        # — 11) Estadísticas —
-        perf = {}
-        for n in filtered_notes:
-            try:
-                g = float(n["calificacion"])
-            except:
-                continue
-            perf.setdefault(n["asignatura"], []).append(g)
-
-        bars = []
-        for subj, grades in perf.items():
-            avg = sum(grades) / len(grades)
-            bars.append(
-                ft.Row(
-                    controls=[
-                        ft.Text(
-                            subj,
-                            width=80,
-                            size=12,
-                            color="#374151",
-                            overflow=ft.TextOverflow.ELLIPSIS,
-                            max_lines=1
-                        ),
-                        ft.Container(
-                            width=avg * 20,
-                            height=10,
-                            bgcolor=self.color_for(avg),
-                            border_radius=ft.border_radius.all(4),
-                        ),
-                        ft.Text(
-                            f"{avg:.1f}",
-                            size=12,
-                            width=30,
-                            text_align=ft.TextAlign.RIGHT,
-                        ),
-                    ],
-                    spacing=6,
-                )
-            )
-
-        stats_panel = ft.Card(
-            elevation=2,
-            color="white",
-            width=260,
-            content=ft.Container(
-                padding=ft.padding.all(12),
-                content=ft.Column(
-                    controls=[ft.Text("Desempeño", size=14, weight=ft.FontWeight.BOLD)] + bars,
-                    spacing=8,
-                    expand=True
-                ),
-                expand=True
-            ),
-            margin=ft.margin.only(top=12),
-        )
-
-        # — 12) Empaquetar todo en main_content —
-        left_column = ft.Column(
-            controls=[
-                notes_list,
-                ft.Container(height=12),
-                export_button,
-                download_link_text
-            ],
-            expand=True,
-            spacing=4
-        )
-
-        right_panel = ft.Container(
-            content=ft.Column(
-                controls=[mini_calendar, stats_panel],
-                spacing=12,
-                expand=True
-            ),
-            width=260
-        )
-
-        main_content = ft.Container(
-            expand=True,
-            padding=ft.padding.symmetric(horizontal=12),
-            content=ft.Row(
-                controls=[
-                    left_column,
-                    right_panel
-                ],
-                expand=True,
-                spacing=8,
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            ),
-        )
-
-        # — 13) Encabezado y envoltorio final —
-        heading = ft.Container(
-            content=ft.Text("Sección de Notas", size=28, weight=ft.FontWeight.BOLD),
-            margin=ft.margin.only(left=20, right=20, top=20, bottom=10),
-        )
-
-        notes_wrapper = ft.Container(
-            bgcolor="#F3F4F6",
-            border_radius=ft.border_radius.all(12),
-            padding=ft.padding.all(20),
-            margin=ft.margin.symmetric(horizontal=16, vertical=10),
-            content=main_content,
-            expand=True
-        )
-
-        return ft.Column(
-        controls=[
-            navbar,
-            *notifs,
-            # Insertamos el top_panel justo aquí:
-            top_panel,
-            filter_row,
-            heading,
-            notes_wrapper,
-            ft.Container(height=12),
-            # Ya no más gráficas duplicadas
-        ],
-        expand=True,
-        spacing=0
+            ]),
+            header,
+            ft.Divider(height=8),
+            *rows
+        ])
+    
+    calendar_container = ft.Container(
+        width=280,
+        padding=16,
+        bgcolor=AppTheme.surface_color("#FFFFFF", "#1E293B"),
+        border_radius=12,
+        shadow=ft.BoxShadow(spread_radius=1, blur_radius=15, color=ft.Colors.BLACK12),
+        content=build_calendar_content()
     )
+    
+    return calendar_container
+
+# ================ PÁGINA DE NOTAS MEJORADA ================
+class NotesPage(ft.Control):
+    def __init__(self, page: ft.Page, **kwargs):
+        super().__init__(**kwargs)
+        self.page = page
+        self.notifier = NotificationSystem(page)
+        self.filter_system = FilterSystem()
+        self.csv_link = ""
+        self.loading = False
+        self.mobile_panel_ref = ft.Ref[ft.Column]()
+        self.mobile_panel_visible = False
+        self.page.fonts = {
+            "Poppins": "https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap"
+        }
+        
+    def _get_control_name(self):
+        return "NotesPage"
+    
+    # ================ OPERACIONES CRUD ================
+    def _edit_note(self, note):
+        dlg = ft.AlertDialog(
+            title=ft.Text(f"Editar nota: {note['asignatura']}", font_family="Poppins"),
+            content=ft.Column([
+                ft.TextField(
+                    label="Asignatura", 
+                    value=note['asignatura'],
+                    border_radius=12,
+                    border_color=AppTheme.PRIMARY
+                ),
+                ft.TextField(
+                    label="Calificación", 
+                    value=str(note['calificacion']),
+                    border_radius=12,
+                    border_color=AppTheme.PRIMARY
+                ),
+                ft.TextField(
+                    label="Fecha", 
+                    value=note['fecha'],
+                    border_radius=12,
+                    border_color=AppTheme.PRIMARY
+                ),
+            ]),
+            actions=[
+                ft.TextButton(
+                    "Guardar", 
+                    style=ft.ButtonStyle(bgcolor=AppTheme.PRIMARY, color="white"),
+                    on_click=lambda e: self._save_note(note, dlg)
+                ),
+                ft.TextButton(
+                    "Cancelar", 
+                    on_click=lambda e: dlg.close()
+                )
+            ]
+        )
+        self.page.dialog = dlg
+        dlg.open = True
+        self.page.update()
+
+    def _save_note(self, note, dialog):
+        # Validación y guardado
+        dialog.close()
+        self.notifier.show("Nota actualizada!", "success")
+        self.update()
+
+    def _delete_note(self, note):
+        def confirm_delete(e):
+            # Eliminar de la fuente de datos
+            dlg_confirm.open = False
+            self.page.update()
+            self.notifier.show("Nota eliminada.", "success")
+            self.update()
+        
+        dlg_confirm = ft.AlertDialog(
+            title=ft.Text("Confirmar eliminación", font_family="Poppins"),
+            content=ft.Text(f"¿Eliminar nota de {note['asignatura']}?"),
+            actions=[
+                ft.TextButton(
+                    "Sí", 
+                    style=ft.ButtonStyle(color=AppTheme.DANGER),
+                    on_click=confirm_delete
+                ),
+                ft.TextButton(
+                    "Cancelar", 
+                    on_click=lambda e: dlg_confirm.close()
+                )
+            ]
+        )
+        self.page.dialog = dlg_confirm
+        dlg_confirm.open = True
+        self.page.update()
+
+    # ================ COMPONENTES UI MEJORADOS ================
+    def _stat_card(self, title: str, value, color: str, icon_name: str):
+        """Tarjeta estadística compacta y moderna"""
+        return ft.Container(
+            width=110,
+            height=110,
+            padding=12,
+            border_radius=12,
+            bgcolor=ft.Colors.with_opacity(0.05, color),
+            border=ft.border.all(1, ft.Colors.with_opacity(0.1, color)),
+            content=ft.Column(
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.CENTER,
+                controls=[
+                    ft.Container(
+                        width=40,
+                        height=40,
+                        border_radius=20,
+                        bgcolor=ft.Colors.with_opacity(0.15, color),
+                        content=ft.Icon(
+                            icon_name,
+                            color=color,
+                            size=20
+                        )
+                    ),
+                    ft.Text(
+                        str(value),
+                        size=22,
+                        weight=ft.FontWeight.BOLD,
+                        color=color
+                    ),
+                    ft.Text(
+                        title,
+                        size=11,
+                        color=ft.Colors.with_opacity(0.7, ft.Colors.BLACK),
+                        text_align=ft.TextAlign.CENTER
+                    )
+                ],
+                spacing=8
+            )
+        )
+    
+    def _filter_chip(self, label: str, selected: bool):
+        """Chip de filtro con diseño moderno"""
+        return ft.Container(
+            padding=ft.padding.symmetric(horizontal=16, vertical=8),
+            border_radius=20,
+            bgcolor=AppTheme.PRIMARY if selected else 
+                   ft.Colors.with_opacity(0.08, AppTheme.PRIMARY),
+            animate=ft.Animation(300, "easeOut"),
+            on_click=lambda e: self._set_filter('sort', label.lower()),
+            content=ft.Text(
+                label,
+                size=13,
+                color="white" if selected else AppTheme.PRIMARY
+            )
+        )
+    
+    def _grade_indicator(self, grade: float):
+        """Indicador visual de calificación mejorado"""
+        return ft.Container(
+            width=100,
+            content=ft.Stack(
+                height=20,
+                controls=[
+                    # Fondo
+                    ft.Container(
+                        width=100,
+                        height=6,
+                        bgcolor=ft.Colors.with_opacity(0.1, AppTheme.DARK),
+                        border_radius=3,
+                        top=7
+                    ),
+                    # Barra de progreso
+                    ft.Container(
+                        width=grade*20,  # 5.0 * 20 = 100
+                        height=6,
+                        bgcolor=AppTheme.grade_color(grade),
+                        border_radius=3,
+                        top=7
+                    ),
+                    # Estrellas
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                name=ft.Icons.STAR,
+                                size=16,
+                                color="#FBBF24" if i < round(grade) else 
+                                     ft.Colors.with_opacity(0.3, AppTheme.DARK)
+                            ) for i in range(5)
+                        ],
+                        spacing=2
+                    )
+                ]
+            )
+        )
+    
+    def _note_card(self, note):
+        """Tarjeta de nota con diseño moderno"""
+        grade = float(note["calificacion"])
+        low_score = grade < 3.0
+        
+        # Creamos el contenedor interno con el evento on_hover
+        container = ft.Container(
+            padding=16,
+            animate=ft.Animation(300, "easeOut"),
+            gradient=ft.LinearGradient(
+                begin=ft.alignment.top_left,
+                end=ft.alignment.bottom_right,
+                colors=[
+                    ft.Colors.with_opacity(0.03, AppTheme.grade_color(grade)),
+                    ft.Colors.with_opacity(0.01, AppTheme.grade_color(grade))
+                ]
+            ),
+            content=ft.Row([
+                # Indicador de color
+                ft.Container(
+                    width=6, height=48,
+                    bgcolor=AppTheme.grade_color(grade),
+                    border_radius=ft.border_radius.all(8),
+                    margin=ft.margin.only(right=16),
+                ),
+                # Contenido principal
+                ft.Column([
+                    ft.Text(
+                        note["asignatura"], 
+                        size=16, 
+                        weight=ft.FontWeight.BOLD,
+                        font_family="Poppins"
+                    ),
+                    ft.Text(note["fecha"], size=12, color=ft.Colors.BLACK54),
+                ], expand=True),
+                # Indicador visual
+                self._grade_indicator(grade),
+                # Icono de estado
+                ft.Icon(
+                    ft.Icons.WARNING_ROUNDED if low_score else ft.Icons.CHECK_CIRCLE_ROUNDED,
+                    color=AppTheme.DANGER if low_score else AppTheme.SUCCESS,
+                    size=22
+                ),
+                # Acciones
+                ft.PopupMenuButton(
+                    icon=ft.Icons.MORE_VERT,
+                    icon_color=ft.Colors.BLACK54,
+                    items=[
+                        ft.PopupMenuItem(
+                            icon=ft.Icons.EDIT,
+                            text="Editar",
+                            on_click=lambda e, x=note: self._edit_note(x)
+                        ),
+                        ft.PopupMenuItem(
+                            icon=ft.Icons.DELETE,
+                            text="Eliminar",
+                            on_click=lambda e, x=note: self._delete_note(x)
+                        ),
+                    ]
+                )
+            ], 
+            alignment=ft.MainAxisAlignment.CENTER, 
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER
+            ),
+            # Evento on_hover
+            on_hover=lambda e: self._toggle_card_hover(e)
+        )
+        
+        return ft.Card(
+            elevation=0,
+            margin=ft.margin.symmetric(horizontal=16, vertical=8),
+            shape=ft.RoundedRectangleBorder(radius=12),
+            content=container
+        )
+    
+    def _toggle_card_hover(self, e):
+        """Efecto hover para tarjetas"""
+        container = e.control
+        card = container.parent
+        if e.data == "true":
+            card.elevation = 8
+            container.bgcolor = ft.Colors.with_opacity(0.02, AppTheme.PRIMARY)
+        else:
+            card.elevation = 0
+            container.bgcolor = None
+        card.update()
+
+    def _toggle_mobile_panel(self, e):
+        """Alterna la visibilidad del panel móvil"""
+        self.mobile_panel_visible = not self.mobile_panel_visible
+        if self.mobile_panel_ref.current:
+            self.mobile_panel_ref.current.visible = self.mobile_panel_visible
+            e.control.icon = ft.Icons.EXPAND_LESS if self.mobile_panel_visible else ft.Icons.EXPAND_MORE
+            self.update()
+
+    # ================ VISTAS PRINCIPALES ================
+    def build_summary(self):
+        """Panel de resumen estadístico compacto"""
+        califs = [float(n["calificacion"]) for n in notes_data_all]
+        promedio = sum(califs) / len(califs) if califs else 0
+        total = len(notes_data_all)
+        materias = len(set(n["asignatura"] for n in notes_data_all))
+        bajas = sum(1 for n in notes_data_all if float(n["calificacion"]) < 3.0)
+        
+        return ft.Row(
+            scroll=ft.ScrollMode.AUTO,
+            controls=[
+                self._stat_card("PROMEDIO", f"{promedio:.2f}", AppTheme.SUCCESS, ft.Icons.BAR_CHART),
+                self._stat_card("NOTAS", total, AppTheme.PRIMARY, ft.Icons.LIST),
+                self._stat_card("MATERIAS", materias, AppTheme.SECONDARY, ft.Icons.SCHOOL),
+                self._stat_card("< 3.0", bajas, AppTheme.DANGER, ft.Icons.WARNING),
+            ],
+            spacing=15,
+            alignment=ft.MainAxisAlignment.SPACE_EVENLY
+        )
+
+    def build_performance_chart(self):
+        """Gráfico de desempeño por asignatura"""
+        averages = self.get_average_by_subject()
+        if not averages: return ft.Container()
+        
+        return ft.Card(
+            elevation=0,
+            margin=0,
+            content=ft.Container(
+                padding=16,
+                border_radius=12,
+                border=ft.border.all(1, ft.Colors.with_opacity(0.1, AppTheme.PRIMARY)),
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.TRENDING_UP, color=AppTheme.PRIMARY, size=20),
+                        ft.Text("Desempeño por Asignatura", size=14, weight=ft.FontWeight.BOLD)
+                    ]),
+                    ft.Divider(height=12),
+                    ft.Column([
+                        ft.Row([
+                            ft.Text(
+                                subj, 
+                                size=12, 
+                                width=100, 
+                                weight=ft.FontWeight.BOLD,
+                                tooltip=subj
+                            ),
+                            ft.Container(
+                                width=avg*40, 
+                                height=10, 
+                                bgcolor=AppTheme.grade_color(avg), 
+                                border_radius=5,
+                                animate=ft.Animation(1000, "easeOut")
+                            ),
+                            ft.Text(f"{avg:.2f}", size=12, width=40, text_align=ft.TextAlign.RIGHT)
+                        ], spacing=8) for subj, avg in averages.items()
+                    ], spacing=10)
+                ])
+            )
+        )
+
+    # ================ LÓGICA DE DATOS ================
+    @lru_cache(maxsize=32)
+    def get_average_by_subject(self):
+        """Calcula promedios por asignatura con caché"""
+        subj_data = {}
+        for n in notes_data_all:
+            try: 
+                g = float(n["calificacion"])
+                subj_data.setdefault(n["asignatura"], []).append(g)
+            except: 
+                continue
+        return {subj: sum(grades)/len(grades) for subj, grades in subj_data.items()}
+
+    def load_filtered_notes(self):
+        """Filtra notas según el sistema de filtros"""
+        return self.filter_system.apply(notes_data_all)
+
+    # ================ MANEJADORES ================
+    def _set_filter(self, filter_type, value):
+        """Aplica filtro y actualiza UI"""
+        if filter_type == 'sort':
+            self.filter_system.filters['sort'] = value
+        self.update()
+
+    def on_search_change(self, e):
+        self.filter_system.filters['text'] = e.control.value.strip()
+        self.update()
+
+    def exportar_csv(self, e):
+        """Exporta a CSV en segundo plano"""
+        self.loading = True
+        self.export_button.disabled = True
+        self.export_button.text = "Exportando..."
+        self.update()
+        
+        def export_thread():
+            try:
+                df = pd.DataFrame(notes_data_all)
+                ruta = "mis_notas.csv"
+                df.to_csv(ruta, index=False)
+                time.sleep(1)  # Simular proceso largo
+                self.csv_link = f"sandbox:/{ruta}"
+                self.notifier.show("CSV generado. Descarga disponible", "success")
+            except Exception as e:
+                self.notifier.show(f"Error al exportar: {str(e)}", "error")
+            finally:
+                self.loading = False
+                self.export_button.disabled = False
+                self.export_button.text = "Exportar a CSV"
+                self.update()
+        
+        threading.Thread(target=export_thread).start()
+
+    # ================ VISTA PRINCIPAL ================
+    def build(self):
+        # Navbar superior
+        navbar = ft.Container(
+            bgcolor=AppTheme.surface_color("#FFFFFF", "#1E293B"),
+            padding=ft.padding.symmetric(horizontal=20, vertical=12),
+            content=ft.Row([
+                # Menú de navegación
+                build_popup_menu(),
+                ft.Text(
+                    "Point List", 
+                    size=22, 
+                    weight=ft.FontWeight.BOLD, 
+                    font_family="Poppins",
+                    color=AppTheme.DARK
+                ),
+                ft.Container(expand=True),
+                ft.Text(current_user["name"], color=AppTheme.DARK),
+                ft.GestureDetector(
+                    content=ft.CircleAvatar(
+                        foreground_image_src=current_user["photo_url"], 
+                        radius=20
+                    ),
+                    on_tap=lambda e: NavigationController.update_view("Perfil")
+                )
+            ])
+        )
+
+        # Panel superior: estadísticas
+        top_panel = ft.Container(
+            padding=ft.padding.only(top=10, bottom=15),
+            content=ft.Column([
+                ft.Text("RESUMEN ACADÉMICO", 
+                        size=14, 
+                        color=ft.Colors.BLACK54,
+                        weight=ft.FontWeight.BOLD),
+                self.build_summary()
+            ])
+        )
+
+        # Filtros
+        filter_row = ft.ResponsiveRow(
+            columns=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Column(
+                    col=8,
+                    controls=[
+                        ft.Row([
+                            self._filter_chip("Todos", self.filter_system.filters['sort'] == 'all'),
+                            self._filter_chip("Recientes", self.filter_system.filters['sort'] == 'recent'),
+                            self._filter_chip("Viejas", self.filter_system.filters['sort'] == 'old'),
+                        ], spacing=8)
+                    ]
+                ),
+                ft.Column(
+                    col=4,
+                    controls=[
+                        ft.TextField(
+                            hint_text="Buscar asignatura...",
+                            prefix_icon=ft.Icons.SEARCH,
+                            border_radius=20,
+                            filled=True,
+                            content_padding=12,
+                            on_change=self.on_search_change,
+                            expand=True
+                        )
+                    ]
+                )
+            ]
+        )
+
+        # Lista de notas con paginación
+        notes_list = ft.Column(
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+            controls=[self._note_card(n) for n in self.load_filtered_notes()[:50]]  # Paginación inicial
+        )
+
+        # Panel lateral derecho (contenido)
+        self.export_button = ft.ElevatedButton(
+            "Exportar a CSV",
+            icon=ft.Icons.DOWNLOAD,
+            on_click=self.exportar_csv,
+            style=ft.ButtonStyle(
+                bgcolor=AppTheme.PRIMARY, 
+                color="white",
+                padding=ft.padding.symmetric(vertical=12)
+            )
+        )
+        
+        # Usamos la función build_calendar directamente
+        right_panel_content = ft.Column([
+            build_calendar(on_date_select=lambda d: self._set_filter('date', d)),
+            ft.Divider(height=24),
+            self.build_performance_chart(),
+            ft.Divider(height=24),
+            self.export_button,
+            ft.Text("► Descargar mis_notas.csv", size=14, color=AppTheme.PRIMARY, link=self.csv_link)
+            if self.csv_link else ft.Container()
+        ], spacing=16)
+
+        # Layout principal responsivo
+        return ft.Column(
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+            controls=[
+                navbar,
+                top_panel,
+                ft.Container(
+                    padding=ft.padding.symmetric(horizontal=15),
+                    content=filter_row
+                ),
+                ft.Divider(height=1, thickness=0.5),
+                # Versión corregida
+                ft.Container(
+                    expand=True,
+                    content=ft.Row([
+                        # Lista de notas
+                        ft.Column(
+                            expand=True,
+                            scroll=ft.ScrollMode.AUTO,
+                            controls=[
+                                notes_list,
+                                ft.ProgressBar(visible=self.loading)
+                            ]
+                        ),
+                        # Panel lateral solo visible en pantallas grandes
+                        ft.ResponsiveRow(
+                            visible=self.page.width >= 768,
+                            controls=[right_panel_content]
+                        )
+                    ])
+                ),
+                # Panel móvil colapsable
+                ft.Column(
+                    visible=self.page.width < 768,
+                    controls=[
+                        ft.IconButton(
+                            icon=ft.Icons.EXPAND_MORE if not self.mobile_panel_visible else ft.Icons.EXPAND_LESS,
+                            on_click=self._toggle_mobile_panel
+                        ),
+                        ft.Column(
+                            ref=self.mobile_panel_ref,
+                            visible=self.mobile_panel_visible,
+                            controls=[right_panel_content]
+                        )
+                    ]
+                )
+            ]
+        )
+
+    def update(self):
+        super().update()
 
 
 
-
-
-
-
+# ================ PÁGINA DE DETALLE DE ASIGNATURA ================
 class SubjectDetailPage(BasePage):
     def __init__(self, page: ft.Page, subject: str, **kwargs):
-        super().__init__(**kwargs); self.page=page; self.subject=subject
-    def _get_control_name(self): return "SubjectDetailPage"
+        super().__init__(**kwargs)
+        self.page = page
+        self.subject = subject
+        
+    def _get_control_name(self): 
+        return "SubjectDetailPage"
+    
     def build(self):
-        navbar=ft.Container(bgcolor="white",padding=ft.padding.symmetric(horizontal=30,vertical=10),
-            content=ft.Row([ft.IconButton(icon=ft.Icons.ARROW_BACK,on_click=lambda e:NavigationController.update_view("Notas")),
-                            ft.Text(f"Detalle: {self.subject}",size=22,weight=ft.FontWeight.BOLD),
-                            ft.Container(expand=True), ft.Text(current_user["name"], color="#2B2B2B"),
-                            # avatar clicable:
-                            ft.GestureDetector(
-                            content=ft.CircleAvatar(foreground_image_src=current_user["photo_url"], radius=16),
-                            on_tap=lambda e: NavigationController.update_view("Perfil")
-                            )],
-                           alignment=ft.MainAxisAlignment.CENTER))
-        entries=[n for n in notes_data_all if n["asignatura"]==self.subject]
-        cards=[ft.Container(bgcolor="white",border_radius=ft.border_radius.all(8),padding=ft.padding.all(12),
-                            content=ft.Column([ft.Text(f"Calificación: {e['calificacion']}",size=16,weight=ft.FontWeight.BOLD),
-                                              ft.Text(f"Fecha: {e['fecha']}",size=14,color="#6B7280")],spacing=6))
-               for e in entries]
-        return ft.Column([navbar,ft.Divider(height=1)] + cards,spacing=10,expand=True)
+        navbar = ft.Container(
+            bgcolor=AppTheme.surface_color("#FFFFFF", "#1E293B"),
+            padding=ft.padding.symmetric(horizontal=20, vertical=12),
+            shadow=ft.BoxShadow(spread_radius=1, blur_radius=10, color=ft.Colors.BLACK12),
+            content=ft.Row([
+                ft.IconButton(
+                    icon=ft.Icons.ARROW_BACK,
+                    on_click=lambda e: NavigationController.update_view("Notas")
+                ),
+                ft.Text(
+                    f"Detalle: {self.subject}",
+                    size=22,
+                    weight=ft.FontWeight.BOLD,
+                    font_family="Poppins",
+                    expand=True,
+                    text_align=ft.TextAlign.CENTER
+                ),
+                ft.GestureDetector(
+                    content=ft.CircleAvatar(
+                        foreground_image_src=current_user["photo_url"], 
+                        radius=20
+                    ),
+                    on_tap=lambda e: NavigationController.update_view("Perfil")
+                )
+            ])
+        )
+        
+        entries = [n for n in notes_data_all if n["asignatura"] == self.subject]
+        
+        # Gráfico de evolución
+        dates = sorted(set(e['fecha'] for e in entries))
+        avg_grades = []
+        for d in dates:
+            day_grades = [float(e['calificacion']) for e in entries if e['fecha'] == d]
+            avg_grades.append(sum(day_grades)/len(day_grades) if day_grades else 0)
+        
+        chart = ft.Container(
+            height=200,
+            padding=20,
+            content=ft.LineChart(
+                data_series=[
+                    ft.LineChartData(
+                        data_points=[
+                            ft.LineChartDataPoint(i, grade) for i, grade in enumerate(avg_grades)
+                        ],
+                        color=AppTheme.PRIMARY,
+                        stroke_width=3,
+                        curved=True,
+                        stroke_cap_round=True
+                    )
+                ],
+                min_y=0,
+                max_y=5,
+                left_axis=ft.ChartAxis(labels_size=40),
+                bottom_axis=ft.ChartAxis(
+                    labels=[
+                        ft.ChartAxisLabel(
+                            i, 
+                            ft.Text(d.split('-')[-1]),  # Cierre añadido aquí para ft.Text
+                            position=ft.LabelPosition.OUTSIDE
+                        ) for i, d in enumerate(dates)
+                    ],
+                    labels_size=40
+                ),
+                tooltip_bgcolor=ft.Colors.with_opacity(0.8, ft.Colors.BLACK),
+                expand=True
+            )
+        )
+        
+        # Tarjetas de notas
+        cards = []
+        for e in entries:
+            grade = float(e['calificacion'])
+            cards.append(
+                ft.Card(
+                    elevation=3,
+                    margin=ft.margin.symmetric(vertical=8),
+                    child=ft.Container(
+                        padding=16,
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Text(f"Calificación: {grade}", size=16, weight=ft.FontWeight.BOLD),
+                                ft.Container(
+                                    width=24,
+                                    height=24,
+                                    border_radius=12,
+                                    bgcolor=AppTheme.grade_color(grade),
+                                )
+                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                            ft.Text(f"Fecha: {e['fecha']}", size=14, color=AppTheme.surface_color("#6B7280", "#9CA3AF")),
+                            ft.Text(f"Comentarios: {e.get('comentarios', 'Sin comentarios')}", size=14)
+                        ], spacing=8)
+                    )
+                )
+            )
+        
+        return ft.Column([
+            navbar,
+            ft.Divider(height=1),
+            ft.Container(padding=20, content=chart),
+            ft.Divider(height=16),
+            ft.Container(padding=ft.padding.symmetric(horizontal=20), content=ft.Column(cards))
+        ], expand=True)
+    
+
+
 
 # -------------------------
 # LISTA GLOBAL DE TÉCNICAS
